@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "library": "示例梗库",
+  "note": "每次生成消息重新读取，改完立即生效，不需要重启 bot。keywords 做子串匹配，不要放过于通用的短词，否则会误伤正常聊天。enabled=false 的条目会被跳过。",
+  "entries": [
+    {
+      "id": "example-meme",
+      "name": "示例梗",
+      "keywords": [
+        "示例梗"
+      ],
+      "summary": "这是一个用于演示梗库格式的示例条目，不代表任何真实人物或事件。",
+      "origin": "无",
+      "usage": "当消息中出现「示例梗」时，条目会被注入到系统提示词。",
+      "stance": "仅作格式示例；请替换成自己的内容，并保留分寸说明。",
+      "source": "template",
+      "added_at": "2026-10-21",
+      "enabled": false
+    }
+  ]
+}

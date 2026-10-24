@@ -1,0 +1,49 @@
+# CyberYinYu .gitignore
+
+# ---------- 本地配置与密钥 ----------
+otowa.env
+otowa.env.*
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+
+# ---------- 运行时数据 ----------
+logs/
+*.log
+data/
+memory/global.json
+memory/groups/
+*.sqlite3
+*.sqlite3-*
+
+# ---------- 素材与数据集 ----------
+personality/stickers/*
+!personality/stickers/README.md
+dataset/import/
+dataset/cleaned/
+dataset/*.jsonl
+
+# ---------- Python ----------
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ---------- 构建产物 ----------
+dist/
+build/
+*.egg-info/
+
+# ---------- 编辑器 / 系统 ----------
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
