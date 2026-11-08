@@ -1,0 +1,39 @@
+name: release
+
+# 打 v* tag 时自动构建发布包并创建 GitHub Release。
+# 之所以不在本地用 API 建 release：部署密钥只能做 git 操作，而
+# Actions 里的 GITHUB_TOKEN 天然有 contents: write 权限。
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Build release archives
+        run: python packaging/build_release.py
+
+      - name: Show artifacts
+        run: ls -lh dist/
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/cyberyinyu-*.tar.gz
+            dist/cyberyinyu-*.zip
+            dist/SHA256SUMS
+          generate_release_notes: true
+          fail_on_unmatched_files: true
