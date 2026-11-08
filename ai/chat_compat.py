@@ -1,6 +1,7 @@
 """Compatibility helpers for OpenAI-shaped chat APIs with model-specific limits."""
 
 import logging
+import os
 import re
 from typing import Any
 
@@ -8,10 +9,24 @@ from openai import AsyncOpenAI, BadRequestError
 
 logger = logging.getLogger("cyberyinyu")
 
-# --- Deep thinking control (Bailian / DashScope) ----------------------------
+# --- Prompt-cache health ----------------------------------------------------
 #
-# `enable_thinking` is not an OpenAI standard field, so it always travels inside
-# `extra_body`. Bailian's mixed-thinking models default to thinking ON.
+# The provider bills uncached input at many times the cached rate, so a broken
+# prefix is a cost incident, not a curiosity. DeepSeek reports
+# `usage.prompt_cache_hit_tokens` / `prompt_cache_miss_tokens`; providers that
+# don't (Bailian) are silently skipped. Thresholds are env-tunable so an
+# incident can be investigated without a redeploy.
+CACHE_HIT_WARN_RATIO = float(os.getenv("CACHE_HIT_WARN_RATIO", "0.6"))
+CACHE_HIT_WARN_MIN_TOKENS = int(os.getenv("CACHE_HIT_WARN_MIN_TOKENS", "2000"))
+
+# --- Deep thinking control (Bailian / DashScope / DeepSeek official) --------
+#
+# 两家字段不同，写错不会报错、只会静默失效（2026-10-29 实测）：
+#   * 百炼 / 网关：`extra_body.enable_thinking = true|false`
+#   * api.deepseek.com：`extra_body.thinking = {"type": "enabled"|"disabled"}`
+#     同一句「在吗」：默认 111 reasoning token / 1.26s；thinking.type=disabled
+#     后 0 / 0.79s；而 enable_thinking=false 被忽略（仍 76 token）。
+# 两者都不是 OpenAI 标准字段，所以一律塞在 `extra_body` 里。
 #
 # Two different questions are involved, so they get two different patterns:
 #   * is_flash_tier       - "should we turn thinking OFF by default?" (fast chat)
@@ -24,12 +39,18 @@ logger = logging.getLogger("cyberyinyu")
 # both cases. Measured on the same short prompt:
 #   qwen3.8-flash       : 103 reasoning tokens / 5.0s  ->  0 / 0.8s when off
 #   deepseek-v4.1-flash : 332 reasoning tokens / 5.1s  ->  0 / 0.8s when off
+#   deepseek-flash      : 111 reasoning tokens / 1.3s  ->  0 / 0.8s when off
 # Other *-flash names (gemini-3.8-flash, glm-5.3-flash) are deliberately NOT
 # matched: they are not Bailian models and the field's effect there is untested.
 
-_FLASH_TIER = re.compile(r"^(?:qwen[\d.]*(?:-omni)?|deepseek-v[\d.]+)-flash", re.IGNORECASE)
+_FLASH_TIER = re.compile(
+    # 裸名 deepseek-flash 也要匹配：2026-10-29 起生产就用这个 id，旧正则只认
+    # deepseek-v4.1-flash，导致 on/off 三个模式全被静默丢弃（见 NOTES-runtime 二）。
+    r"^(?:qwen[\d.]*(?:-omni)?|deepseek(?:-v[\d.]+)?)-flash",
+    re.IGNORECASE,
+)
 _MIXED_THINKING = re.compile(
-    r"^(?:qwen[\d.]*(?:-omni)?-(?:max|plus|flash|27b)|deepseek-v[\d.]+-flash)(?:$|[-.])",
+    r"^(?:qwen[\d.]*(?:-omni)?-(?:max|plus|flash|27b)|deepseek(?:-v[\d.]+)?-flash)(?:$|[-.])",
     re.IGNORECASE,
 )
 
@@ -48,7 +69,7 @@ def is_flash_tier(model: str) -> bool:
     """True for the fast/cheap tiers that default to thinking ON.
 
     Covers qwen-flash / qwen3.x-flash / omni-flash / date snapshots, and
-    deepseek-v4.1-flash / deepseek-v4-flash / their snapshots.
+    deepseek-flash / deepseek-v4.1-flash / deepseek-v4-flash / their snapshots.
     """
     return bool(_FLASH_TIER.match(model.strip()))
 
@@ -63,14 +84,22 @@ is_qwen_flash = is_flash_tier
 DISABLE_QWEN_FLASH_THINKING = DISABLE_FLASH_THINKING
 
 
-def _apply_thinking_switch(options: dict[str, Any], model: str, thinking: str) -> None:
+def _apply_thinking_switch(
+    options: dict[str, Any], model: str, thinking: str, base_url: str = ""
+) -> None:
     """Set the deep-thinking switch on `options['extra_body']`, in place.
 
-    `extra_body` may already carry Bailian's `enable_search`, so it is copied and
-    merged rather than replaced - assigning would silently drop the web search.
+    **两家用的字段不一样，混用会静默失效**（2026-10-29 实测，模型 deepseek-flash）：
 
-    `auto` reproduces the previous behaviour (Flash off). `on` / `off` force the
-    value but only for models documented to accept it.
+        端点              正确写法                              错误写法的后果
+        ----------------- --------------------------------    --------------------------------
+        百炼/网关          extra_body.enable_thinking=false     ——
+        api.deepseek.com  extra_body.thinking={"type":"disabled"}  传 enable_thinking=false 被忽略，
+                                                                  仍花 76 个 reasoning token
+
+    同一句「在吗」：不传开关 114 token / 1.26s，`thinking.type=disabled` 后 1 token / 0.79s。
+
+    `extra_body` 里可能已经有百炼的 `enable_search`，所以复制合并，绝不整体赋值。
     """
     mode = thinking if thinking in {THINKING_AUTO, THINKING_ON, THINKING_OFF} else THINKING_AUTO
 
@@ -88,12 +117,51 @@ def _apply_thinking_switch(options: dict[str, Any], model: str, thinking: str) -
         desired = False
 
     body = dict(options.get("extra_body") or {})
-    body["enable_thinking"] = desired
-    options["extra_body"] = body
-    if desired is False:
-        logger.info("模型 %s：关闭深度思考 (enable_thinking=false)", model.strip())
+    if "deepseek.com" in (base_url or "").casefold():
+        body["thinking"] = {"type": "enabled" if desired else "disabled"}
+        field = f"thinking.type={'enabled' if desired else 'disabled'}"
     else:
-        logger.info("模型 %s：开启深度思考 (enable_thinking=true)", model.strip())
+        body["enable_thinking"] = desired
+        field = f"enable_thinking={'true' if desired else 'false'}"
+    options["extra_body"] = body
+    logger.info(
+        "模型 %s：%s深度思考 (%s)", model.strip(), "开启" if desired else "关闭", field
+    )
+
+
+def _check_cache_health(response: Any, model: str, options: dict[str, Any]) -> None:
+    """Warn when the provider's prompt-cache hit ratio falls below threshold.
+
+    The chat path depends on a stable `[system, *history]` prefix; a drop means
+    the prefix broke and every turn is being re-sent at full price. Skipped for
+    tool-call rounds (the `working` list grows every round, cold by design) and
+    for small/first-turn requests (legitimately cold).
+    """
+    if "tools" in options:
+        return
+    usage = getattr(response, "usage", None)
+    if usage is None:
+        return
+    hit = getattr(usage, "prompt_cache_hit_tokens", None)
+    miss = getattr(usage, "prompt_cache_miss_tokens", None)
+    if hit is None or miss is None:
+        return
+    total = int(hit) + int(miss)
+    if total < CACHE_HIT_WARN_MIN_TOKENS:
+        return
+    ratio = int(hit) / total
+    if ratio >= CACHE_HIT_WARN_RATIO:
+        return
+    logger.warning(
+        "提示词缓存命中率过低: model=%s hit=%d miss=%d total=%d ratio=%.1f%% (< %.0f%%)"
+        "—— 前缀可能被破坏，逐轮全价重发；若确认是会话首条消息可忽略",
+        model or "unknown",
+        hit,
+        miss,
+        total,
+        ratio * 100,
+        CACHE_HIT_WARN_RATIO * 100,
+    )
 
 
 async def create_chat_completion(
@@ -116,10 +184,14 @@ async def create_chat_completion(
             # before it has room to emit the user-facing answer.
             options["max_tokens"] = max(int(options["max_tokens"]), 8192)
 
-    _apply_thinking_switch(options, model, thinking)
+    _apply_thinking_switch(
+        options, model, thinking, base_url=str(getattr(client, "base_url", "") or "")
+    )
 
     try:
-        return await client.chat.completions.create(**options)
+        response = await client.chat.completions.create(**options)
+        _check_cache_health(response, model, options)
+        return response
     except BadRequestError as exc:
         error_text = str(exc).casefold()
         changed = False
@@ -148,4 +220,6 @@ async def create_chat_completion(
 
         if not changed:
             raise
-        return await client.chat.completions.create(**options)
+        response = await client.chat.completions.create(**options)
+        _check_cache_health(response, model, options)
+        return response

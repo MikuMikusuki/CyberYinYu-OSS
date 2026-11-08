@@ -1,3 +1,6 @@
 openai>=1.40,<4
 aiohttp>=3.9,<4
 python-dotenv>=1.0,<2
+Pillow>=10,<13
+# ai/web_fetch.py 读 PDF 时按需导入；缺少它只会让 PDF 抓取失败，不影响启动。
+pypdf>=4,<7

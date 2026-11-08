@@ -15,7 +15,7 @@
     {
       "id": "example-alias",
       "topic": "称呼",
-      "content": "示例：A 是 B 的简称，两者指同一人。",
+      "content": "示例：群里说的「老板」指的是 QQ 1000000001 这个人。",
       "source": "人工确认",
       "updated_at": "2026-10-21"
     }

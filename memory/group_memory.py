@@ -5,9 +5,11 @@ import logging
 import re
 import threading
 import uuid
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
+
+from memory.subject import QQ_IN_TEXT, has_bare_pronoun_subject
 
 
 GROUP_MEMORY_DIR = Path(__file__).resolve().parent / "groups"
@@ -32,9 +34,14 @@ SENSITIVE_PATTERN = re.compile(
     r"手机号|电话号码|身份证|住址|家庭住址|密码|验证码|银行卡|信用卡|病史|诊断|处方|用药|自伤|银行卡号|真实姓名",
     re.IGNORECASE,
 )
+# 称呼链只对「X是Y」这种纯别名句生效。X/Y 允许是带 QQ 锚的形式
+# （QQ12345678（阿伟）），否则锚定后的条目会静默掉出链条推导。
+_RELATION_TERM = (
+    r"(?:QQ\s*号?\s*\d{5,12}(?:（[^）]{1,32}）)?|[A-Za-z0-9\u4e00-\u9fff_.-]{1,32})"
+)
 ALIAS_RELATION_PATTERN = re.compile(
-    r"^\s*([A-Za-z0-9\u4e00-\u9fff_.-]{1,32})\s*(?:是|叫|=|＝|即为)\s*"
-    r"([A-Za-z0-9\u4e00-\u9fff_.-]{1,32})\s*[。.!！]?\s*$"
+    rf"^\s*({_RELATION_TERM})\s*(?:是|叫|=|＝|即为)\s*"
+    rf"({_RELATION_TERM})\s*[。.!！]?\s*$"
 )
 logger = logging.getLogger(__name__)
 
@@ -83,6 +90,35 @@ def _derived_alias_chains(memories: list[dict[str, Any]]) -> list[str]:
     return derived
 
 
+# 注入时的实时昵称改写。存储层永远是「QQ号（当时的名片）」这个稳定锚，
+# 渲染成提示词时才把括号里的名字换成群成员列表里查到的最新名片——模型
+# 回答「谁是谁」时用人话说称呼，而不是念一串 QQ 号。
+QQ_ANCHOR_RE = re.compile(
+    r"QQ\s*号?\s*(\d{5,12})(?:（([^）]{0,64})）)?",
+    re.IGNORECASE,
+)
+
+
+def render_with_current_nicknames(
+    text: str, nicknames: Mapping[str, str] | None
+) -> str:
+    """把条目里每个 QQ 锚的括号名换成最新群名片；查不到的保持原样。
+
+    纯函数、无副作用：不改存储，只改喂给模型（或 #记忆 列表）的那一份。
+    """
+    if not nicknames:
+        return text
+
+    def _sub(match: re.Match[str]) -> str:
+        qq = match.group(1)
+        current = " ".join(str(nicknames.get(qq, "")).split())
+        if not current:
+            return match.group(0)
+        return f"QQ{qq}（{current}）"
+
+    return QQ_ANCHOR_RE.sub(_sub, text)
+
+
 class GroupMemoryStore:
     def __init__(self, directory: Path = GROUP_MEMORY_DIR) -> None:
         self.directory = directory
@@ -108,6 +144,9 @@ class GroupMemoryStore:
             "schema_version": 1,
             "group_id": str(group_id),
             "group_name": "",
+            # 群记忆开关：缺省视为开启。只由群主 / 管理员 / owner 通过
+            # #关闭记忆 / #开启记忆 修改，权限判定在 bot.py，存储层只执行。
+            "memory_enabled": True,
             "memories": [],
         }
 
@@ -130,9 +169,54 @@ class GroupMemoryStore:
             return None
         return self.directory / f"{group_id}.json"
 
-    def context_for(self, group_id: str) -> str:
+    def memory_enabled(self, group_id: str) -> bool:
+        """本群记忆是否开启。读不到档案时按开启处理（别把功能意外关掉）。"""
         data = self._load(group_id)
         if data is None:
+            return True
+        return data.get("memory_enabled") is not False
+
+    def set_memory_enabled(
+        self,
+        group_id: str,
+        enabled: bool,
+        *,
+        operator_qq: str = "",
+        operator_label: str = "",
+        source: str = "",
+    ) -> tuple[bool, bool]:
+        """开/关群记忆，返回 ``(是否写入成功, 状态是否真的变了)``。
+
+        权限判定不在这里——调用方（bot.py 的命令层）已经确认过是群主、
+        管理员或 owner。存储层只负责原子落盘并留痕。
+        """
+        path = self._path_for(group_id)
+        if path is None:
+            return False, False
+        with self._lock_for(group_id):
+            data = self._load(group_id)
+            if data is None:
+                return False, False
+            current = data.get("memory_enabled") is not False
+            if current == bool(enabled):
+                return True, False
+            data["memory_enabled"] = bool(enabled)
+            data["memory_toggled_by"] = str(operator_qq)
+            data["memory_toggled_name"] = str(operator_label)[:40]
+            data["memory_toggled_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            data["memory_toggle_source"] = str(source)[:80]
+            self._atomic_write(path, data)
+            return True, True
+
+    def context_for(
+        self, group_id: str, nicknames: Mapping[str, str] | None = None
+    ) -> str:
+        """渲染本群长期记忆；nicknames 是 {qq: 最新群名片}，可选。"""
+        data = self._load(group_id)
+        if data is None:
+            return ""
+        if data.get("memory_enabled") is False:
+            # 关掉就是关掉：既不注入也不提示，模型当它不存在。
             return ""
 
         memories = data.get("memories", [])
@@ -154,16 +238,32 @@ class GroupMemoryStore:
                 continue
             content = " ".join(content.split())[:MAX_MEMORY_CHARS]
             if content:
+                content = render_with_current_nicknames(content, nicknames)
                 lines.append(f"- {ALLOWED_CATEGORIES[category]}：{content}")
                 valid_memories.append({"category": category, "content": content})
 
         if not lines:
             return ""
         heading = f"本群（群号 {group_id}）的长期背景候选项。只在与当前消息相关时参考：\n"
+        if any(QQ_IN_TEXT.search(line) for line in lines):
+            if nicknames:
+                heading += (
+                    "（条目里的 QQ号 只是内部身份锚点，括号里已经换成最新的群名片；"
+                    "提到人时用群名片称呼，不要把 QQ 号念出来。）\n"
+                )
+            else:
+                heading += (
+                    "（条目里的 QQ12345678 是稳定身份，括号里是当时的群名片，"
+                    "可能已经改过；提到人时优先用括号里的名片称呼，"
+                    "不要把 QQ 号念出来。）\n"
+                )
         derived = _derived_alias_chains(valid_memories)
         sections = []
         if derived:
-            sections.append("可传递称呼关系（由下方记忆推导）：\n" + "\n".join(derived))
+            rendered_derived = [
+                render_with_current_nicknames(line, nicknames) for line in derived
+            ]
+            sections.append("可传递称呼关系（由下方记忆推导）：\n" + "\n".join(rendered_derived))
         sections.append("记忆条目：\n" + "\n".join(lines))
         rendered = heading + "\n\n".join(sections)
         return rendered[:MAX_PROMPT_CHARS]
@@ -252,6 +352,13 @@ class GroupMemoryStore:
             if decision.get("confidence") != "high":
                 return False
 
+            if action in {"add", "update"} and data.get("memory_enabled") is False:
+                # 关掉的群一律不写入新内容；删除仍然放行，方便关着的时候清理。
+                logger.info(
+                    "群记忆已关闭，拒绝写入: group=%s action=%s", group_id, action
+                )
+                return False
+
             if action == "delete":
                 memory_id = decision.get("memory_id")
                 updated = [item for item in memories if not (
@@ -273,6 +380,16 @@ class GroupMemoryStore:
                     return False
                 content = " ".join(content.split()).strip()[:MAX_MEMORY_CHARS]
                 if not content or SENSITIVE_PATTERN.search(content):
+                    return False
+                if has_bare_pronoun_subject(content):
+                    # 兜底闸：「他是X」「我是Y」离开当轮就再也对不上人。
+                    # 上层（bot.process_memory_request）本该先锚成 QQ 号，
+                    # 走到这里还没锚住说明确实无法确定主体，宁可不写。
+                    logger.warning(
+                        "拒绝写入主语不明的群记忆: group=%s content=%s",
+                        group_id,
+                        content[:40],
+                    )
                     return False
 
                 entry = {
