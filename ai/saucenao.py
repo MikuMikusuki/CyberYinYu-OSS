@@ -42,6 +42,8 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
+from ai.usage import tracked_tool, track_http_request
+
 try:  # Pillow 是可选的：没有它也能跑，只是不做转码/缩放
     from PIL import Image as _PILImage
 
@@ -367,7 +369,9 @@ async def fetch_preview(session: Any, hit: "SauceHit", *, timeout: float = 25.0)
     for template in _PIXIV_MIRRORS:
         url = template.format(id=hit.pixiv_id)
         try:
-            async with session.get(url, headers=_IMAGE_HEADERS, timeout=timeout) as response:
+            async with track_http_request(
+                session.get(url, headers=_IMAGE_HEADERS, timeout=timeout), name="saucenao_preview_download"
+            ) as response:
                 if response.status != 200:
                     logger.info("搜源配图 %s 返回 HTTP %s", url, response.status)
                     continue
@@ -463,7 +467,9 @@ async def load_image(session: Any, url: str, *, timeout: float = 20.0) -> bytes:
         raise SauceNaoError("图片地址不是 http(s)，下载不了。")
 
     try:
-        async with session.get(url, headers=_IMAGE_HEADERS, timeout=timeout) as response:
+        async with track_http_request(
+            session.get(url, headers=_IMAGE_HEADERS, timeout=timeout), name="source_image_download"
+        ) as response:
             if response.status != 200:
                 raise SauceNaoError(
                     f"下载图片失败（HTTP {response.status}）。QQ 的图链会过期，重发一次图。"
@@ -575,6 +581,7 @@ async def search(
     raise last_error or SauceNaoError("所有 SauceNAO key 都不可用，稍后再试。")
 
 
+@tracked_tool("saucenao_search", applicable=False)
 async def _search_once(
     session: Any,
     image: bytes,
@@ -627,6 +634,9 @@ async def _search_once(
     ) as response:
         raw = await response.text()
         status = response.status
+
+    if status != 200:
+        raise SauceNaoError(f"SauceNAO 返回 HTTP {status}。", status=status)
 
     if not raw.strip():
         raise SauceNaoError(

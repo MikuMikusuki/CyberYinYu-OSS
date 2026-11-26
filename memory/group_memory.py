@@ -144,7 +144,7 @@ class GroupMemoryStore:
             "schema_version": 1,
             "group_id": str(group_id),
             "group_name": "",
-            # 群记忆开关：缺省视为开启。只由群主 / 管理员 / owner 通过
+            # 群记忆开关：缺省视为开启。只由群主 / 管理员 / owner通过
             # #关闭记忆 / #开启记忆 修改，权限判定在 bot.py，存储层只执行。
             "memory_enabled": True,
             "memories": [],
@@ -188,7 +188,7 @@ class GroupMemoryStore:
         """开/关群记忆，返回 ``(是否写入成功, 状态是否真的变了)``。
 
         权限判定不在这里——调用方（bot.py 的命令层）已经确认过是群主、
-        管理员或 owner。存储层只负责原子落盘并留痕。
+        管理员或owner。存储层只负责原子落盘并留痕。
         """
         path = self._path_for(group_id)
         if path is None:
@@ -322,6 +322,112 @@ class GroupMemoryStore:
             and item.get("category") in ALLOWED_CATEGORIES
             and isinstance(item.get("content"), str)
         ][:MAX_MEMORIES]
+
+    # -- 人工编辑（Web 控制台 /admin 的「记忆」页）-------------------------
+    # 校验规则和 apply_decision 完全一致，区别只在返回「原因」：从 apply_decision
+    # 的一个 False 里看不出是哪条规矩挡的，人工编辑必须把原因回显给人看。
+    def upsert_entry(
+        self,
+        group_id: str,
+        *,
+        category: str,
+        content: str,
+        entry_id: str = "",
+        source: str = "WebUI 人工编辑",
+    ) -> tuple[bool, str]:
+        """新增或改写一条记忆，返回 ``(是否写入, 原因)``。"""
+        path = self._path_for(group_id)
+        if path is None:
+            return False, "群号只能是纯数字"
+        if category not in ALLOWED_CATEGORIES:
+            return False, f"分类必须是 {('/'.join(ALLOWED_CATEGORY_IDS))} 之一"
+        text = " ".join(str(content or "").split()).strip()
+        if not text:
+            return False, "内容不能为空"
+        if len(text) > MAX_MEMORY_CHARS:
+            return False, f"内容 {len(text)} 字，超过 {MAX_MEMORY_CHARS} 字上限"
+        if SENSITIVE_PATTERN.search(text):
+            return False, "命中隐私词（手机号/身份证/密码/住址等），记忆里不存这类信息"
+        if has_bare_pronoun_subject(text):
+            return False, "主语是「他/她/我」这类代词，离开当轮就对不上人；请写成「QQ12345678（昵称）」"
+
+        with self._lock_for(group_id):
+            data = self._load(group_id)
+            if data is None:
+                return False, "读不到这个群的记忆档案"
+            if data.get("memory_enabled") is False:
+                return False, "本群记忆已关闭，先在右上角打开再写入"
+            memories = data.get("memories")
+            if not isinstance(memories, list):
+                return False, "记忆档案结构不对（memories 不是列表）"
+
+            today = date.today().isoformat()
+            if entry_id:
+                index = next(
+                    (
+                        i
+                        for i, item in enumerate(memories)
+                        if isinstance(item, dict) and item.get("id") == entry_id
+                    ),
+                    None,
+                )
+                if index is None:
+                    return False, "这条记忆已经不在了（可能刚被删掉），刷新一下"
+                entry = dict(memories[index])
+                entry["category"] = category
+                entry["content"] = text
+                entry["source"] = source[:80]
+                entry["updated_at"] = today
+                memories[index] = entry
+            else:
+                if len(memories) >= MAX_MEMORIES:
+                    return False, f"已经到 {MAX_MEMORIES} 条上限，先删几条再写"
+                normalized = text.casefold()
+                if any(
+                    isinstance(item, dict)
+                    and item.get("category") == category
+                    and isinstance(item.get("content"), str)
+                    and " ".join(item["content"].split()).casefold() == normalized
+                    for item in memories
+                ):
+                    return False, "同分类下已经有一模一样的一条"
+                memories.append(
+                    {
+                        "id": uuid.uuid4().hex[:12],
+                        "category": category,
+                        "content": text,
+                        "source": source[:80],
+                        "updated_at": today,
+                    }
+                )
+            data["memories"] = memories
+            self._atomic_write(path, data)
+        return True, "已保存"
+
+    def delete_entry(self, group_id: str, entry_id: str) -> tuple[bool, str]:
+        """按 id 删一条。记忆关着也放行——关着的时候正是清理的时机。"""
+        path = self._path_for(group_id)
+        if path is None:
+            return False, "群号只能是纯数字"
+        if not entry_id:
+            return False, "缺少条目 id"
+        with self._lock_for(group_id):
+            data = self._load(group_id)
+            if data is None:
+                return False, "读不到这个群的记忆档案"
+            memories = data.get("memories")
+            if not isinstance(memories, list):
+                return False, "记忆档案结构不对（memories 不是列表）"
+            updated = [
+                item
+                for item in memories
+                if not (isinstance(item, dict) and item.get("id") == entry_id)
+            ]
+            if len(updated) == len(memories):
+                return False, "没找到这条记忆"
+            data["memories"] = updated
+            self._atomic_write(path, data)
+        return True, "已删除"
 
     def apply_decision(
         self,

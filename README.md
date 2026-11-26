@@ -58,9 +58,11 @@ OpenAI 兼容模型服务（聊天 / 视觉 / 图搜图 / 生图 / 官方工具�
 
 ## 快速开始
 
+Windows 和 Linux 安装包可从仓库的 [Releases](https://github.com/MikuMikusuki/CyberYinYu-OSS/releases) 下载。用 Git 检出源码后，也可直接按下方的「从源码启动」运行。
+
 ### Windows
 
-1. 解压 `cyberyinyu-1.1.0-windows.zip`。
+1. 解压 `cyberyinyu-<版本>-windows.zip`。
 2. 右键运行 `install.ps1`（或在 PowerShell 中执行）：
 
    ```powershell
@@ -74,8 +76,9 @@ OpenAI 兼容模型服务（聊天 / 视觉 / 图搜图 / 生图 / 官方工具�
 ### Linux
 
 ```bash
-tar -xzf cyberyinyu-1.1.0-linux.tar.gz
-cd cyberyinyu-1.1.0
+version=1.1.0  # 替换为下载的版本
+tar -xzf "cyberyinyu-${version}-linux.tar.gz"
+cd "cyberyinyu-${version}"
 sudo bash install.sh
 sudoedit /opt/cyberyinyu/otowa.env
 sudo systemctl start cyberyinyu
@@ -83,6 +86,18 @@ sudo systemctl status cyberyinyu
 ```
 
 默认安装到 `/opt/cyberyinyu`；可用 `APP_DIR=/your/path sudo bash install.sh` 覆盖。
+
+### 从源码启动
+
+在项目根目录创建虚拟环境并复制配置模板。以 PowerShell 为例：
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+Copy-Item .env.example otowa.env
+```
+
+Linux 对应的虚拟环境解释器为 `.venv/bin/python`，复制模板可用 `cp .env.example otowa.env`。填写模型和 NapCat 配置后，用虚拟环境中的 Python 执行 `bot.py`。
 
 ### NapCat 配置
 
@@ -140,6 +155,20 @@ sudo systemctl status cyberyinyu
 
 **注意**：`config.py` 在 import 时读取一次 `otowa.env`，修改后必须重启进程；`style.txt`、`heat.txt`、`memes.json`、`memory/*.json` 每次生成都会重读，改完即生效。
 
+## Web 控制台与用量
+
+在 `otowa.env` 中设置 `WEBUI_ENABLED=true`，重启后打开 `http://127.0.0.1:8080/admin`。控制台可查看连接、模型与工具用量、日志，管理人格、记忆和配置，也可发起试聊。
+
+- 默认只接受本机访问。配置 `WEBUI_TOKEN` 后，控制台页面和数据接口均需 token。浏览器可在首次进入时通过 `?token=…` 传入。远程维护可使用 SSH 隧道。
+- 用量按模型和工具记录到 `data/usage.sqlite3`，包含调用状态和服务商返回的 token 计数。计数缺失时标为未知。数据库不存提示词、回复正文或 API Key。
+- 保存配置会在 `data/_webui_backups/` 留下本地备份。备份可能含运行配置中的密钥，应限制本机访问。
+
+## 可选上下文增强
+
+- `CONTEXT_SUMMARY_ENABLED=true` 会调用聊天模型压缩较早的已答轮次，并在请求前按本地预算检查输入。
+- `GROUP_BACKGROUND_ENABLED=true` 会短时缓存近期群聊文字，并可能在下一次触发回复时将它们作为背景发给模型。该配置适合成员知情的群。
+- `VISION_WEB_SEARCH_ENABLED=true` 允许支持工具调用的视觉模型在带文字的问题中使用 DeepSeek 官方搜索。
+
 ## 命令
 
 命令在 `@` 门禁之前处理，群聊不需要 `@`；但都受 `QQ_REPLY_WHITELIST` 限制。
@@ -147,6 +176,7 @@ sudo systemctl status cyberyinyu
 | 命令 | 作用 | 权限 |
 |---|---|---|
 | `#model` | 查看当前文本/图片模型 | 所有人 |
+| `#模型状态` / `#modelstatus` | 检查已配置的模型通道，会发出模型请求 | 所有人（小时限额） |
 | `#时间` / `#time` | 返回本机时间 | 所有人 |
 | `#记忆` / `#memory` | 列出本群记忆（自动分页） | 所有人 |
 | `#关闭记忆` / `#开启记忆` | 开关本群记忆 | 群主 / 管理员 / `OWNER_QQ` |
@@ -178,6 +208,8 @@ sudo systemctl status cyberyinyu
 ```
 bot.py                 入口：WS 服务、事件路由、模型调用、命令
 config.py              读取 otowa.env，导出配置常量
+webui.py / webui/      可选控制台后端与静态文件
+group_background.py    可选的近期群聊背景缓存
 concurrency.py         按会话串行、跨会话并行的并发门
 ai/                    提示词、模型兼容、联网、图搜/搜源/生图、越权拦截、限流
 memory/                上下文、全局/群级记忆、梗库、热模式开关、few-shot
@@ -188,6 +220,8 @@ packaging/             Linux/Windows 安装脚本与打包工具
 ```
 
 ## 构建发布包
+
+在 Git 工作区运行以下命令。打包读取 Git 已跟踪的工作区文件，新文件需先暂存。
 
 ```bash
 python packaging/build_release.py
@@ -203,7 +237,7 @@ python packaging/build_release.py
 
 - 仓库不包含任何真实密钥、token、QQ 号、群号或服务器信息。
 - `otowa.env`、日志、群记忆、贴纸图片、热模式状态和数据集产物均已加入 `.gitignore`。
-- 消息只在本机与所配置的模型 API 之间传输；没有遥测。
+- 消息会发往所配置的模型或工具服务。各通道的数据范围见 `SECURITY.md`。
 - 生产部署请只绑定 `127.0.0.1`，不要把 NapCat HTTP 或 bot WS 暴露到公网。
 - 发现安全问题请按 [`SECURITY.md`](SECURITY.md) 私下报告，不要开公开 issue。
 

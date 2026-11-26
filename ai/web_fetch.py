@@ -11,7 +11,7 @@
 安全边界（这是全项目唯一一个「让模型决定去访问哪个地址」的入口，必须挡住）：
 ``fetch_url`` 只允许 http/https，并且**解析后的每个 IP 都必须是公网地址**——
 localhost / 127.0.0.0/8 / 10.x / 192.168.x / 169.254.x（云元数据）等一律拒绝，
-否则一句「打开 http://127.0.0.1:8080/status」就能把内网读穿。
+解析目标地址和处理重定向时均限制访问范围。
 """
 
 import asyncio
@@ -24,6 +24,8 @@ from dataclasses import dataclass
 from html.parser import HTMLParser
 from typing import Any
 from urllib.parse import unquote, urlparse
+
+from ai.usage import tracked_tool, record_tool
 
 from config import (
     WEB_FETCH_MAX_BYTES,
@@ -195,6 +197,7 @@ def html_to_text(html: str) -> tuple[str, str]:
 
 # --- 下载 ----------------------------------------------------------------
 
+@tracked_tool("web_fetch_download", applicable=False)
 async def _download(session: Any, url: str) -> tuple[bytes, str]:
     """返回 (bytes, content_type)。超过上限直接截断，不报错。"""
     headers = {"User-Agent": USER_AGENT, "Accept": "*/*"}
@@ -260,7 +263,11 @@ def _looks_like_pdf(url: str, content_type: str) -> bool:
 
 async def fetch_url(session: Any, url: str) -> FetchedDoc:
     """抓一个地址，返回正文。PDF 本地解析，HTML 优先走官方 fetch。"""
-    url = await assert_public_url(url)
+    try:
+        url = await assert_public_url(url)
+    except FetchError:
+        record_tool("web_fetch_download", status="rejected")
+        raise
 
     # 1) 明显是 PDF（.pdf 结尾）：直接本地下载 + pypdf，别浪费一次官方调用。
     if _looks_like_pdf(url, ""):

@@ -4,7 +4,7 @@
 Usage:
     python packaging/build_release.py
 
-Outputs (in dist/):
+Run from a Git working tree. Outputs (in dist/):
     cyberyinyu-<version>-linux.tar.gz
     cyberyinyu-<version>-windows.zip
     SHA256SUMS
@@ -14,7 +14,9 @@ from __future__ import annotations
 import hashlib
 import os
 import shutil
+import subprocess
 import tarfile
+import tempfile
 import zipfile
 from pathlib import Path
 
@@ -22,41 +24,29 @@ ROOT = Path(__file__).resolve().parent.parent
 VERSION = (ROOT / "VERSION").read_text(encoding="utf-8").strip()
 NAME = f"cyberyinyu-{VERSION}"
 DIST = ROOT / "dist"
-STAGE = DIST / f"_stage-{os.getpid()}"
-
-_SKIP_DIRS = {".git", "__pycache__", "dist", "build", ".venv", "venv", "logs", "data"}
-_SKIP_REL = {
-    "memory/global.json",
-    "dataset/messages.jsonl",
-}
 
 
-def _ignore(directory: str, names: list[str]) -> set[str]:
-    ignored: set[str] = set()
-    base = Path(directory)
-    for name in names:
-        path = base / name
-        try:
-            rel = path.relative_to(ROOT).as_posix()
-        except ValueError:
-            rel = name
-        if name in _SKIP_DIRS:
-            ignored.add(name)
-        elif rel in _SKIP_REL:
-            ignored.add(name)
-        elif rel.startswith(("memory/groups", "dataset/import", "dataset/cleaned")):
-            ignored.add(name)
-        elif name == "otowa.env" or name.startswith("otowa.env."):
-            ignored.add(name)
-        elif name.endswith((".pyc", ".pyo", ".sqlite3", ".sqlite3-wal", ".sqlite3-shm")):
-            ignored.add(name)
-        elif rel.startswith("personality/stickers/") and name != "README.md":
-            ignored.add(name)
-    return ignored
+def _git_paths(*options: str) -> set[Path]:
+    try:
+        result = subprocess.run(
+            ["git", "ls-files", "-z", "--cached", *options],
+            cwd=ROOT, check=True, capture_output=True,
+        )
+    except (FileNotFoundError, subprocess.CalledProcessError) as exc:
+        raise SystemExit("请在 Git 工作区构建发布包，并确保 git 命令可用。") from exc
+    return {Path(os.fsdecode(name)) for name in result.stdout.split(b"\0") if name}
 
 
-def _copy_tree(src: Path, dst: Path) -> None:
-    shutil.copytree(src, dst, ignore=_ignore, dirs_exist_ok=True)
+def _copy_sources(destination: Path) -> None:
+    # 配置备份即使被暂存，也继续按 Git 忽略规则排除。
+    files = _git_paths() - _git_paths("--ignored", "--exclude-standard")
+    for relative in sorted(files):
+        source = ROOT / relative
+        if source.resolve() != source or not source.is_file():
+            raise SystemExit(f"打包文件缺失或为重定向路径：{relative}")
+        target = destination / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, target)
 
 
 def _overlay(src_dir: Path, dst: Path, names: tuple[str, ...]) -> None:
@@ -90,57 +80,43 @@ def _build_zip(source: Path, output: Path) -> None:
                 archive.write(path, (Path(NAME) / path.relative_to(source)).as_posix())
 
 
-def _clean_dist() -> None:
-    DIST.mkdir(parents=True, exist_ok=True)
-    for child in DIST.iterdir():
-        try:
-            if child.is_dir():
-                shutil.rmtree(child)
-            else:
-                child.unlink()
-        except OSError as exc:
-            print(f"  warning: 未能清理 {child}: {exc}")
-
-
 def main() -> int:
     if not VERSION:
         raise SystemExit("VERSION 文件为空")
-
-    _clean_dist()
-    linux_root = STAGE / "linux" / NAME
-    windows_root = STAGE / "windows" / NAME
-
+    DIST.mkdir(parents=True, exist_ok=True)
     print(f"building {NAME}")
-    _copy_tree(ROOT, linux_root)
-    _copy_tree(ROOT, windows_root)
+    with tempfile.TemporaryDirectory(prefix="_stage-", dir=DIST) as staging:
+        stage = Path(staging)
+        linux_root = stage / "linux" / NAME
+        windows_root = stage / "windows" / NAME
+        _copy_sources(linux_root)
+        shutil.copytree(linux_root, windows_root)
 
-    _overlay(ROOT / "packaging" / "linux", linux_root,
-             ("install.sh", "cyberyinyu.service", "run.sh"))
-    _overlay(ROOT / "packaging" / "windows", windows_root,
-             ("install.ps1", "start_bot.bat", "view_logs.bat"))
-    for path in windows_root.rglob("*.bat"):
-        _normalise_bat(path)
+        _overlay(linux_root / "packaging" / "linux", linux_root,
+                 ("install.sh", "cyberyinyu.service", "run.sh"))
+        _overlay(windows_root / "packaging" / "windows", windows_root,
+                 ("install.ps1", "start_bot.bat", "view_logs.bat"))
+        for path in windows_root.rglob("*.bat"):
+            _normalise_bat(path)
 
-    linux_archive = DIST / f"{NAME}-linux.tar.gz"
-    windows_archive = DIST / f"{NAME}-windows.zip"
-    _build_tar(linux_root, linux_archive)
-    _build_zip(windows_root, windows_archive)
+        linux_archive = stage / f"{NAME}-linux.tar.gz"
+        windows_archive = stage / f"{NAME}-windows.zip"
+        _build_tar(linux_root, linux_archive)
+        _build_zip(windows_root, windows_archive)
 
-    checksums = []
-    for artifact in (linux_archive, windows_archive):
-        digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
-        checksums.append(f"{digest}  {artifact.name}")
-    with (DIST / "SHA256SUMS").open("w", encoding="utf-8", newline="\n") as handle:
-        handle.write("\n".join(checksums) + "\n")
+        checksum_file = stage / "SHA256SUMS"
+        checksums = []
+        for artifact in (linux_archive, windows_archive):
+            digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
+            checksums.append(f"{digest}  {artifact.name}")
+        checksum_file.write_text("\n".join(checksums) + "\n", encoding="utf-8", newline="\n")
 
-    try:
-        shutil.rmtree(STAGE)
-    except Exception as exc:  # noqa: BLE001 - 某些环境会拦截批量删除
-        print(f"  warning: 未能清理临时目录 {STAGE}: {exc}")
-        shutil.rmtree(STAGE, ignore_errors=True)
-    for artifact in (linux_archive, windows_archive):
-        print(f"  {artifact.name}  {artifact.stat().st_size / 1024:.1f} KiB")
-    print(f"  SHA256SUMS")
+        for artifact in (linux_archive, windows_archive):
+            size_kib = artifact.stat().st_size / 1024
+            artifact.replace(DIST / artifact.name)
+            print(f"  {artifact.name}  {size_kib:.1f} KiB")
+        checksum_file.replace(DIST / checksum_file.name)
+        print(f"  {checksum_file.name}")
     return 0
 
 

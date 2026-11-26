@@ -185,7 +185,25 @@ async def run_image_search(
         request["instructions"] = instructions
 
     logger.info("发起图搜图: model=%s 有补充文本=%s 图片来源=%s", model, bool(query), image_url[:60])
-    response = await client.responses.create(**request)
+    from ai import usage as usage_stats
+    response = await usage_stats.track_model_call(
+        lambda: client.responses.create(**request), model=model, operation="image_search"
+    )
+    for item in getattr(response, "output", None) or []:
+        if getattr(item, "type", None) != "image_search_call":
+            continue
+        status = getattr(item, "status", "")
+        if status == "completed":
+            outcome = "success"
+        elif status in {"failed", "cancelled", "incomplete"}:
+            outcome = "failed"
+        else:
+            outcome = "unknown"
+        usage_stats.record_tool(
+            "bailian_image_search", operation="image_search", status=outcome,
+            usage=getattr(item, "usage", None),
+            images=len(_parse_search_images(getattr(item, "output", None))),
+        )
     result = collect_result(response)
     logger.info("图搜图完成: 图片 %d 张，回复 %d 字", len(result.images), len(result.text))
     return result

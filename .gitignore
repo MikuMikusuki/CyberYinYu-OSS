@@ -11,6 +11,12 @@ otowa.env.*
 *.p12
 *.pfx
 
+# ---------- 本地工作记录与备份 ----------
+.workbuddy/
+_webui_backups/
+*.bak
+*.bak-*
+
 # ---------- 运行时数据 ----------
 logs/
 *.log

@@ -1,5 +1,6 @@
 """Environment-backed settings for CyberYinYu."""
 
+import json
 import logging
 import os
 import re
@@ -293,8 +294,38 @@ GROUP_REPLY_ONLY_WHEN_MENTIONED = os.getenv("GROUP_REPLY_ONLY_WHEN_MENTIONED", "
 GROUP_REPLY_TO_BOT_AS_MENTION = os.getenv(
     "GROUP_REPLY_TO_BOT_AS_MENTION", "true"
 ).lower() in {"1", "true", "yes", "on"}
+# 近期群聊背景试验默认关闭；仅内存缓存，不改变回复门禁。
+GROUP_BACKGROUND_ENABLED = os.getenv("GROUP_BACKGROUND_ENABLED", "false").strip().lower() in {
+    "1", "true", "yes", "on"
+}
+GROUP_BACKGROUND_TTL_SECONDS = max(1.0, float(os.getenv("GROUP_BACKGROUND_TTL_SECONDS", "180")))
+GROUP_BACKGROUND_MAX_MESSAGES = max(1, int(os.getenv("GROUP_BACKGROUND_MAX_MESSAGES", "20")))
+GROUP_BACKGROUND_MAX_CHARS = max(1, int(os.getenv("GROUP_BACKGROUND_MAX_CHARS", "4000")))
+GROUP_BACKGROUND_MAX_GROUPS = max(1, int(os.getenv("GROUP_BACKGROUND_MAX_GROUPS", "100")))
+GROUP_BACKGROUND_MAX_TEXT_CHARS = max(1, int(os.getenv("GROUP_BACKGROUND_MAX_TEXT_CHARS", "600")))
 CONTEXT_MAX_TURNS = max(1, int(os.getenv("CONTEXT_MAX_TURNS", "50")))
 CONTEXT_TTL_SECONDS = max(60, int(os.getenv("CONTEXT_TTL_SECONDS", "86400")))
+
+# 旧行为兼容：摘要默认关闭；这些值只在 CONTEXT_SUMMARY_ENABLED=true 时生效。
+CONTEXT_SUMMARY_ENABLED = os.getenv("CONTEXT_SUMMARY_ENABLED", "false").strip().lower() in {
+    "1", "true", "yes", "on"
+}
+CONTEXT_SUMMARY_KEEP_TURNS = max(1, int(os.getenv("CONTEXT_SUMMARY_KEEP_TURNS", "8")))
+CONTEXT_SUMMARY_TRIGGER_TURNS = max(2, int(os.getenv("CONTEXT_SUMMARY_TRIGGER_TURNS", "20")))
+CONTEXT_SUMMARY_MIN_NEW_TURNS = max(1, int(os.getenv("CONTEXT_SUMMARY_MIN_NEW_TURNS", "4")))
+CONTEXT_SUMMARY_MAX_CHARS = max(200, int(os.getenv("CONTEXT_SUMMARY_MAX_CHARS", "6000")))
+CONTEXT_SUMMARY_MAX_INPUT_CHARS = max(100, int(os.getenv("CONTEXT_SUMMARY_MAX_INPUT_CHARS", "12000")))
+# 本地保守预算，不代表任何模型的官方上下文窗口；按模型名只做兼容层选择。
+CONTEXT_SUMMARY_BUDGET_TOKENS = max(4000, int(os.getenv("CONTEXT_SUMMARY_BUDGET_TOKENS", "16000")))
+# JSON 对象：精确模型名 -> 操作者明确设置的本地 token 预算。
+CONTEXT_SUMMARY_MODEL_BUDGETS = json.loads(os.getenv("CONTEXT_SUMMARY_MODEL_BUDGETS", "{}"))
+CONTEXT_SUMMARY_COMPLETION_RESERVE = max(1, int(os.getenv("CONTEXT_SUMMARY_COMPLETION_RESERVE", "3500")))
+CONTEXT_SUMMARY_TOOL_SCHEMA_RESERVE = max(0, int(os.getenv("CONTEXT_SUMMARY_TOOL_SCHEMA_RESERVE", "1500")))
+CONTEXT_SUMMARY_SAFETY_RESERVE = max(0, int(os.getenv("CONTEXT_SUMMARY_SAFETY_RESERVE", "1000")))
+CONTEXT_SUMMARY_IMAGE_RESERVE = max(1, int(os.getenv("CONTEXT_SUMMARY_IMAGE_RESERVE", "4096")))
+CONTEXT_SUMMARY_FAILURE_COOLDOWN = max(0.0, float(os.getenv("CONTEXT_SUMMARY_FAILURE_COOLDOWN", "300")))
+CONTEXT_SUMMARY_TIMEOUT_SECONDS = max(0.1, float(os.getenv("CONTEXT_SUMMARY_TIMEOUT_SECONDS", "8")))
+CONTEXT_SUMMARY_MAX_CONCURRENT = max(1, int(os.getenv("CONTEXT_SUMMARY_MAX_CONCURRENT", "1")))
 
 # --- 并发 ---------------------------------------------------------------
 # 以前 WebSocket 循环逐条 await，一条 5-30 秒的模型调用会把**所有**会话一起
@@ -323,6 +354,14 @@ MAX_IMAGES_PER_MESSAGE = max(1, min(5, int(os.getenv("MAX_IMAGES_PER_MESSAGE", "
 VISION_DETAIL = os.getenv("VISION_DETAIL", "low").strip().lower()
 if VISION_DETAIL not in {"low", "high", "original", "auto"}:
     VISION_DETAIL = "low"
+
+# 只有同时支持图片与 tool calls 的模型才应开启。
+VISION_WEB_SEARCH_ENABLED = os.getenv("VISION_WEB_SEARCH_ENABLED", "false").strip().lower() in {
+    "1", "true", "yes", "on"
+}
+WEBUI_ENABLED = os.getenv("WEBUI_ENABLED", "false").strip().lower() in {
+    "1", "true", "yes", "on"
+}
 
 # 深度思考按任务类型区分：闲聊走快路径（Flash 系默认关思考），
 # 问题与长文本把思考要回来，避免"回答得快但答不准"。只对支持开关的模型生效。

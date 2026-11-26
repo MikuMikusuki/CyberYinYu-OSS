@@ -7,6 +7,8 @@ from typing import Any
 
 from openai import AsyncOpenAI, BadRequestError
 
+from ai import usage as usage_stats
+
 logger = logging.getLogger("cyberyinyu")
 
 # --- Prompt-cache health ----------------------------------------------------
@@ -164,6 +166,21 @@ def _check_cache_health(response: Any, model: str, options: dict[str, Any]) -> N
     )
 
 
+def token_usage_snapshot() -> dict[str, Any]:
+    """概览与独立页使用同一持久化数据源，不另记一套成功计数。"""
+    data = usage_stats.snapshot("all")
+    return {**data["model"], "by_model": data["models"], "last": None}
+
+
+def _record_native_search(response: Any, options: dict[str, Any]) -> None:
+    body = options.get("extra_body") or {}
+    if not body.get("enable_search"):
+        return
+    # enable_search 只是允许搜索，引用数量不是调用次数；无回执时明确标为不可观测。
+    # 搜索结果只是证据/引用，不等价于服务端工具执行回执，不能推算次数。
+    usage_stats.record_tool("bailian_native_search", status="unobserved")
+
+
 async def create_chat_completion(
     client: AsyncOpenAI,
     **request: Any,
@@ -176,6 +193,8 @@ async def create_chat_completion(
     options = dict(request)
     model = str(options.get("model", ""))
     thinking = str(options.pop("thinking", THINKING_AUTO))
+    context_validator = options.pop("context_validator", None)
+    operation = str(options.pop("operation", "chat"))
 
     if "kimi-k3" in model.casefold():
         options.pop("temperature", None)
@@ -188,9 +207,15 @@ async def create_chat_completion(
         options, model, thinking, base_url=str(getattr(client, "base_url", "") or "")
     )
 
+    if context_validator is not None:
+        context_validator(options)
+
     try:
-        response = await client.chat.completions.create(**options)
+        response = await usage_stats.track_model_call(
+            lambda: client.chat.completions.create(**options), model=model, operation=operation
+        )
         _check_cache_health(response, model, options)
+        _record_native_search(response, options)
         return response
     except BadRequestError as exc:
         error_text = str(exc).casefold()
@@ -220,6 +245,9 @@ async def create_chat_completion(
 
         if not changed:
             raise
-        response = await client.chat.completions.create(**options)
+        response = await usage_stats.track_model_call(
+            lambda: client.chat.completions.create(**options), model=model, operation=operation
+        )
         _check_cache_health(response, model, options)
+        _record_native_search(response, options)
         return response

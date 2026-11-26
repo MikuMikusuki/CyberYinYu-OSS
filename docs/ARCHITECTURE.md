@@ -297,7 +297,7 @@ handle_event
 - `#搜索`、`#搜源`、`#画图`、`#改图`、`#ds*`、记忆审核与归纳都走后台任务，不阻塞 WS 循环。
 - `GroupMemoryStore` 使用 `threading.RLock`，前提是所有调用都在事件循环单线程内。
 - `ai/authority_guard.py` 只在系统侧提示模型「对方在要求越权」，真正的权限判定仍在 `bot.py` 的命令层。
-- `ai/web_fetch.py` 在解析阶段拒绝非公网地址，避免一句「打开 http://127.0.0.1:8080/status」把内网读穿。
+- `ai/web_fetch.py` 在解析目标地址和检查重定向时拒绝非公网地址。
 - 密钥只从环境变量读取，不写入代码；`.env.example` 只含占位值。
 - NapCat 与 bot 默认只绑定 `127.0.0.1`。
 
@@ -317,3 +317,9 @@ handle_event
 | `#ds*` key 无效 | `DEEPSEEK_API_KEY` 是否为官方 key |
 | 群记忆写不进 | `confidence=high`；敏感词；200 条上限；JSON 是否损坏 |
 | `#热模式` 没反应 | `HEAT_MODE_ENABLED` 是否为 true；是否私聊；发送者是否在 `HEAT_MODE_QQ` |
+
+## 控制台与用量统计
+
+启用 `WEBUI_ENABLED` 后，`webui.py` 将控制台和 API 注册到现有 aiohttp 应用，静态资源由 `webui/` 提供。试聊调用同一套模型逻辑，配置编辑和备份发生在本地。`ai/usage.py` 将模型与工具的汇总计数写入 SQLite，由 `/admin/api/usage` 查询。
+
+启用上下文摘要时，`memory/context_summary.py` 管理会话内的摘要和请求预算，近期已答轮次继续由 `memory/history.py` 管理。近期群聊背景由 `group_background.py` 单独限量、限时缓存，只在构建当前群聊模型请求时读取。

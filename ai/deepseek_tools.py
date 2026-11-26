@@ -36,6 +36,8 @@ from config import (
     DEEPSEEK_TOOLS_TIMEOUT_SECONDS,
 )
 
+from ai import usage as usage_stats
+
 logger = logging.getLogger("cyberyinyu")
 
 SEARCH_PATH = "/v1/tools/search"
@@ -131,7 +133,15 @@ def _base() -> str:
     return base.rstrip("/")
 
 
-async def _post(session: Any, path: str, body: dict[str, Any]) -> dict[str, Any]:
+async def _post(session: Any, path: str, body: dict[str, Any], *, operation: str = "deepseek_ask") -> dict[str, Any]:
+    call = lambda: _post_raw(session, path, body)
+    if path == CHAT_PATH:
+        return await usage_stats.track_model_call(call, model=DEEPSEEK_TOOLS_MODEL, operation=operation)
+    name = "deepseek_search" if path == SEARCH_PATH else "deepseek_fetch"
+    return await usage_stats.track_tool_call(call, name=name, operation=operation)
+
+
+async def _post_raw(session: Any, path: str, body: dict[str, Any]) -> dict[str, Any]:
     url = f"{_base()}{path}"
     async with session.post(
         url,
@@ -235,7 +245,7 @@ async def search(
     }
     if ori_question:
         body["ori_question"] = ori_question[:MAX_QUERY_CHARS]
-    payload = await _post(session, SEARCH_PATH, body)
+    payload = await _post(session, SEARCH_PATH, body, operation="web_search")
     hits = [_as_hit(item) for item in payload.get("results") or [] if isinstance(item, dict)]
     logger.info("DeepSeek 搜索完成: query=%r 命中 %d 条", query, len(hits))
     return SearchResult(query=query, hits=hits)
@@ -262,7 +272,7 @@ async def fetch(session: Any, url: str) -> FetchedPage:
         raise DeepSeekToolError("要抓的地址必须以 http:// 或 https:// 开头。")
     if len(url) > MAX_URL_CHARS:
         raise DeepSeekToolError("地址过长（上限 8192 字符）。")
-    payload = await _post(session, FETCH_PATH, {"url": url})
+    payload = await _post(session, FETCH_PATH, {"url": url}, operation="web_fetch")
     page = FetchedPage(
         url=url,
         title=str(payload.get("title") or "").strip(),
@@ -279,13 +289,22 @@ async def probe(session: Any) -> str:
     usable, reason = availability()
     if not usable:
         return reason
-    try:
+    async def request():
         async with session.get(
             f"{_base()}/models",
             headers=_headers(),
             timeout=DEEPSEEK_TOOLS_TIMEOUT_SECONDS,
         ) as response:
-            status = response.status
+            if response.status != 200:
+                raise DeepSeekToolError("连通性检查失败", status=response.status)
+            return response.status
+
+    try:
+        status = await usage_stats.track_tool_call(
+            request, name="deepseek_models_probe", operation="health_check", applicable=False
+        )
+    except DeepSeekToolError as exc:
+        status = exc.status
     except Exception as exc:  # noqa: BLE001 - 网络异常原因要原样带出来
         return f"连不上 {_base()}：{type(exc).__name__}: {exc}"[:160]
     if status == 200:
@@ -295,7 +314,7 @@ async def probe(session: Any) -> str:
     return f"接口返回 HTTP {status}。"
 
 
-async def ask(session: Any, question: str, *, context: str = "", system: str = "") -> str:
+async def ask(session: Any, question: str, *, context: str = "", system: str = "", operation: str = "deepseek_ask") -> str:
     """用 DeepSeek 官方新模型（默认 deepseek-flash = V4.1-Flash-1017）作答。
 
     这是独立的模型通道：不经过网关，也不碰百炼。
@@ -315,7 +334,7 @@ async def ask(session: Any, question: str, *, context: str = "", system: str = "
         "max_tokens": 900,
         "stream": False,
     }
-    payload = await _post(session, CHAT_PATH, body)
+    payload = await _post(session, CHAT_PATH, body, operation=operation)
     choices = payload.get("choices") or []
     if not choices:
         raise DeepSeekToolError("模型没有返回任何 choice。")

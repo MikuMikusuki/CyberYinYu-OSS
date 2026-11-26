@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CyberYinYu · 控制台</title>
+<link rel="stylesheet" href="/admin/static/app.css">
+</head>
+<body>
+<a class="skip-link" href="#view">跳至主要内容</a>
+<div class="bg-layer" id="bg-layer"></div>
+<div class="bg-veil" id="bg-veil"></div>
+<div class="app">
+  <aside class="side" id="sidebar" aria-label="主导航">
+    <a class="brand" href="#/overview" aria-label="CyberYinYu控制台首页">
+      <div class="avatar" aria-hidden="true">CY</div>
+      <div class="brand-text">
+        <div class="brand-name">CyberYinYu</div>
+      </div>
+    </a>
+
+    <nav class="nav" id="nav"></nav>
+
+    <div class="side-foot">
+      <div class="side-status">
+        <div class="side-status-top"><span class="status-beacon"></span><span>LOCAL CONSOLE</span></div>
+        <div class="side-meta">
+          <span id="side-bot">等待概览数据</span>
+          <span id="side-ver">v1.0</span>
+        </div>
+      </div>
+      <button class="icon-btn wide" id="theme-toggle" type="button">
+        <span class="ic" id="theme-icon"></span><span id="theme-label">切换浅色</span>
+      </button>
+    </div>
+  </aside>
+  <button class="nav-scrim" id="nav-scrim" type="button" aria-label="关闭导航"></button>
+
+  <main class="main">
+    <header class="top">
+      <div class="top-left">
+        <button class="menu-btn" id="menu-toggle" type="button" aria-label="打开导航" aria-controls="sidebar" aria-expanded="false">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+        </button>
+        <div class="page-heading">
+          <div class="page-kicker" id="page-kicker">CONTROL DECK / OVERVIEW</div>
+          <h1 id="page-title">概览</h1>
+          <p id="page-sub" class="page-sub"></p>
+        </div>
+      </div>
+      <div class="top-right">
+        <span class="sync-note" id="sync-note">本机实时数据</span>
+        <span class="pill" id="ws-pill"><i class="dot"></i><span>连接中</span></span>
+        <button class="btn ghost refresh-btn" id="btn-refresh" type="button">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 11a8 8 0 1 0-2.3 5.7"/><path d="M20 4v7h-7"/></svg><span>刷新</span>
+        </button>
+      </div>
+    </header>
+    <section class="view" id="view" tabindex="-1" aria-live="polite"></section>
+  </main>
+</div>
+
+<div class="toast-wrap" id="toasts" role="status" aria-live="polite"></div>
+<script src="/admin/static/app.js"></script>
+</body>
+</html>

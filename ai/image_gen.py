@@ -25,6 +25,8 @@ import re
 import time
 from dataclasses import dataclass
 
+from ai.usage import track_http_request
+
 try:  # Pillow 是可选的：没有它也能发图，只是不压缩
     from PIL import Image as _PILImage
 
@@ -202,8 +204,9 @@ async def _resolve_blob(
     url, blob = _extract_payload(item)
     if not blob and url:
         try:
-            async with session.get(
-                url, headers=_IMAGE_HEADERS, timeout=max(30.0, float(timeout_seconds))
+            async with track_http_request(
+                session.get(url, headers=_IMAGE_HEADERS, timeout=max(30.0, float(timeout_seconds))),
+                name="generated_image_download",
             ) as download:
                 if download.status != 200:
                     raise ImageGenError(
@@ -250,7 +253,11 @@ async def generate(
     started = time.time()
     logger.info("发起画图: model=%s size=%s prompt=%r", model, request["size"], prompt[:60])
     try:
-        response = await client.images.generate(**request)
+        from ai.usage import track_model_call
+        response = await track_model_call(
+            lambda: client.images.generate(**request), model=model,
+            operation="image_generate", image_response=True,
+        )
     except Exception as exc:
         raise _translate(exc, action="画图") from exc
 
@@ -393,7 +400,11 @@ async def edit(
         prompt[:60],
     )
     try:
-        response = await client.images.edit(**request)
+        from ai.usage import track_model_call
+        response = await track_model_call(
+            lambda: client.images.edit(**request), model=model,
+            operation="image_edit", image_response=True,
+        )
     except Exception as exc:
         raise _translate(exc, action="改图") from exc
 
