@@ -8,6 +8,11 @@ on:
     tags:
       - "v*"
   workflow_dispatch:
+    inputs:
+      tag:
+        description: "要构建/更新的标签名（如 v1.2.0）"
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -17,6 +22,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+          fetch-depth: 0
 
       - uses: actions/setup-python@v5
         with:
@@ -25,15 +33,23 @@ jobs:
       - name: Build release archives
         run: python packaging/build_release.py
 
+      - name: Extract release notes
+        env:
+          TARGET_TAG: ${{ inputs.tag || github.ref_name }}
+        run: python packaging/extract_release_notes.py "$TARGET_TAG" dist/RELEASE_NOTES.md
+
       - name: Show artifacts
         run: ls -lh dist/
 
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ inputs.tag || github.ref_name }}
+          name: CyberYinYu ${{ inputs.tag || github.ref_name }}
+          body_path: dist/RELEASE_NOTES.md
           files: |
             dist/cyberyinyu-*.tar.gz
             dist/cyberyinyu-*.zip
             dist/SHA256SUMS
-          generate_release_notes: true
+          generate_release_notes: false
           fail_on_unmatched_files: true

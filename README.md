@@ -76,7 +76,7 @@ Windows 和 Linux 安装包可从仓库的 [Releases](https://github.com/MikuMik
 ### Linux
 
 ```bash
-version=1.1.0  # 替换为下载的版本
+version=1.2.0  # 替换为下载的版本
 tar -xzf "cyberyinyu-${version}-linux.tar.gz"
 cd "cyberyinyu-${version}"
 sudo bash install.sh

@@ -40,7 +40,7 @@ AI_BASE_URL = _normalize_base_url(
     or os.getenv("DEEPSEEK_BASE_URL", "").strip()
     or "https://api.deepseek.com"
 )
-AI_MODEL = os.getenv("AI_MODEL", "").strip() or os.getenv("DEEPSEEK_MODEL", "").strip() or "deepseek-chat"
+AI_MODEL = os.getenv("AI_MODEL", "").strip() or os.getenv("DEEPSEEK_MODEL", "").strip() or "deepseek-flash"
 _default_vision_model = "deepseek-flash" if "deepseek.com" in AI_BASE_URL.lower() else AI_MODEL
 AI_VISION_MODEL = (
     os.getenv("AI_VISION_MODEL", "").strip()
